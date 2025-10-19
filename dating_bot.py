@@ -70,15 +70,38 @@ def clear_old_viewed_profiles(user_data):
 
 # --- НОВАЯ ФУНКЦИЯ: Команда для очистки истории ---
 async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает историю просмотренных анкет"""
+    """Очищает историю просмотренных анкет, лайки и дизлайки"""
     user_id = update.effective_user.id
     user_data = context.user_data
     
+    # Очищаем историю просмотренных анкет
     if 'viewed_profiles' in user_data:
         user_data['viewed_profiles'] = []
-        await update.message.reply_text("✅ История просмотренных анкет очищена! Теперь вы увидите все анкеты заново.")
-    else:
-        await update.message.reply_text("📝 У вас нет истории просмотренных анкет.")
+    
+    # Очищаем лайки и дизлайки текущего пользователя
+    if user_id in user_likes:
+        user_likes[user_id] = set()
+    if user_id in user_dislikes:
+        user_dislikes[user_id] = set()
+    
+    await update.message.reply_text("✅ История полностью очищена! Теперь вы увидите все анкеты заново.")
+
+# --- НОВАЯ ФУНКЦИЯ: Полный сброс ---
+async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Полный сброс для тестирования"""
+    user_id = update.effective_user.id
+    user_data = context.user_data
+    
+    # Очищаем всё
+    user_data.clear()
+    if user_id in user_likes:
+        user_likes[user_id] = set()
+    if user_id in user_dislikes:
+        user_dislikes[user_id] = set()
+    if user_id in matched_users:
+        matched_users[user_id] = set()
+    
+    await update.message.reply_text("🎯 Полный сброс выполнен! Все анкеты будут показаны заново.")
 
 # Function to check if the user profile is complete
 def is_profile_complete(user_id):
@@ -805,8 +828,9 @@ def main() -> None:
     application.add_handler(conv_handler)
     # Добавляем CallbackQueryHandler для обработки инлайн-кнопок без строгого паттерна
     application.add_handler(CallbackQueryHandler(handle_match_response))
-    # Добавляем обработчик команды /clear
+    # Добавляем обработчик команды /clear и /reset
     application.add_handler(CommandHandler("clear", clear_history_handler))
+    application.add_handler(CommandHandler("reset", reset_all_handler))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
