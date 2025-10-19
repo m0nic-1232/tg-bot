@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+import time
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -58,6 +59,27 @@ user_dislikes = {} # Stores who user_id has disliked
 # Structure: {user_id: {matched_user_id1, matched_user_id2, ...}}
 matched_users = {} # Stores mutual matches
 
+# --- НОВАЯ ФУНКЦИЯ: Очистка старых просмотренных анкет ---
+def clear_old_viewed_profiles(user_data):
+    """Очищает историю просмотренных анкет, если их слишком много"""
+    if 'viewed_profiles' in user_data:
+        # Если просмотренных больше 50, очищаем самые старые
+        if len(user_data['viewed_profiles']) > 50:
+            user_data['viewed_profiles'] = user_data['viewed_profiles'][-25:]
+            logger.info(f"Cleared old viewed profiles, now {len(user_data['viewed_profiles'])} remaining")
+
+# --- НОВАЯ ФУНКЦИЯ: Команда для очистки истории ---
+async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очищает историю просмотренных анкет"""
+    user_id = update.effective_user.id
+    user_data = context.user_data
+    
+    if 'viewed_profiles' in user_data:
+        user_data['viewed_profiles'] = []
+        await update.message.reply_text("✅ История просмотренных анкет очищена! Теперь вы увидите все анкеты заново.")
+    else:
+        await update.message.reply_text("📝 У вас нет истории просмотренных анкет.")
+
 # Function to check if the user profile is complete
 def is_profile_complete(user_id):
     profile = user_profiles.get(user_id)
@@ -109,9 +131,19 @@ async def send_profile_card(user_id: int, target_user_id: int, context: ContextT
             reply_markup=reply_markup
         )
 
-# --- Helper function to find and display the next profile ---
+# --- ОБНОВЛЕННАЯ ФУНКЦИЯ: Поиск следующей анкеты ---
 async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
+    user_data = context.user_data
+    
+    # Очищаем старые просмотренные анкеты
+    clear_old_viewed_profiles(user_data)
+    
+    # Инициализируем список просмотренных анкет, если его нет
+    if 'viewed_profiles' not in user_data:
+        user_data['viewed_profiles'] = []
+    
+    viewed_profiles = user_data['viewed_profiles']
     available_profiles = []
 
     # Get profiles that the current user hasn't liked or disliked, and isn't themselves
@@ -134,13 +166,24 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         available_profiles.append(profile_id)
 
     if not available_profiles:
-        await update.message.reply_text("Пока что больше нет анкет. Попробуйте позже!",
-                                        reply_markup=ReplyKeyboardMarkup([
-                                            [KeyboardButton("Поиск")],
-                                            [KeyboardButton("Настройки")]
-                                        ], resize_keyboard=True))
-        return MENU # Go back to menu if no profiles
+        # Если нет доступных анкет, очищаем историю просмотренных
+        user_data['viewed_profiles'] = []
+        available_profiles = [pid for pid in user_profiles.keys() 
+                            if pid != user_id 
+                            and is_profile_complete(pid)
+                            and pid not in user_likes.get(user_id, set())
+                            and pid not in user_dislikes.get(user_id, set())
+                            and pid not in matched_users.get(user_id, set())]
+        
+        if not available_profiles:
+            await update.message.reply_text("Пока что больше нет анкет. Попробуйте позже!",
+                                            reply_markup=ReplyKeyboardMarkup([
+                                                [KeyboardButton("Поиск")],
+                                                [KeyboardButton("Настройки")]
+                                            ], resize_keyboard=True))
+            return MENU # Go back to menu if no profiles
 
+    # Выбираем случайную анкету из доступных
     next_profile_id = random.choice(available_profiles)
     context.user_data['current_viewing_profile_id'] = next_profile_id
 
@@ -388,6 +431,7 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User likes the current profile."""
     liker_id = update.message.from_user.id
     liked_id = context.user_data.get('current_viewing_profile_id')
+    user_data = context.user_data
 
     if not liked_id:
         await update.message.reply_text("Что-то пошло не так. Попробуйте снова начать поиск.",
@@ -400,6 +444,15 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if liker_id not in user_likes:
         user_likes[liker_id] = set()
     user_likes[liker_id].add(liked_id)
+
+    # Добавляем в просмотренные анкеты
+    if 'viewed_profiles' not in user_data:
+        user_data['viewed_profiles'] = []
+    if liked_id not in user_data['viewed_profiles']:
+        user_data['viewed_profiles'].append(liked_id)
+
+    # Очищаем старые просмотренные анкеты
+    clear_old_viewed_profiles(user_data)
 
     # Check for mutual like (liked_id liked liker_id previously)
     if liked_id in user_likes and liker_id in user_likes[liked_id]:
@@ -419,6 +472,7 @@ async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User dislikes the current profile."""
     disliker_id = update.message.from_user.id
     disliked_id = context.user_data.get('current_viewing_profile_id')
+    user_data = context.user_data
 
     if not disliked_id:
         await update.message.reply_text("Что-то пошло не так. Попробуйте снова начать поиск.",
@@ -432,6 +486,15 @@ async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_dislikes[disliker_id] = set()
     user_dislikes[disliker_id].add(disliked_id)
 
+    # Добавляем в просмотренные анкеты
+    if 'viewed_profiles' not in user_data:
+        user_data['viewed_profiles'] = []
+    if disliked_id not in user_data['viewed_profiles']:
+        user_data['viewed_profiles'].append(disliked_id)
+
+    # Очищаем старые просмотренные анкеты
+    clear_old_viewed_profiles(user_data)
+
     await update.message.reply_text("Анкета пропущена. Продолжаем поиск...")
     return await search_profile(update, context)
 
@@ -440,6 +503,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [KeyboardButton("Редактировать профиль")],
         [KeyboardButton("Мой профиль")],
+        [KeyboardButton("Очистить историю")],  # НОВАЯ КНОПКА
         [KeyboardButton("⬅️ Меню")],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -716,6 +780,7 @@ def main() -> None:
             SETTINGS: [
                 MessageHandler(filters.Regex("^Редактировать профиль$"), edit_profile),
                 MessageHandler(filters.Regex("^Мой профиль$"), show_my_profile),
+                MessageHandler(filters.Regex("^Очистить историю$"), clear_history_handler),  # НОВЫЙ ОБРАБОТЧИК
                 MessageHandler(filters.Regex("^⬅️ Меню$"), back_to_menu),
             ],
             EDIT_PROFILE: [
@@ -740,6 +805,8 @@ def main() -> None:
     application.add_handler(conv_handler)
     # Добавляем CallbackQueryHandler для обработки инлайн-кнопок без строгого паттерна
     application.add_handler(CallbackQueryHandler(handle_match_response))
+    # Добавляем обработчик команды /clear
+    application.add_handler(CommandHandler("clear", clear_history_handler))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
