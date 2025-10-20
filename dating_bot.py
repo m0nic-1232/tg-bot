@@ -382,7 +382,7 @@ async def check_maintenance_for_user(user_id: int) -> bool:
 
 # --- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка статуса ---
 async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса бота во время техобслуживания"""
+    """Проверка статуса бота во время техобслуживания - ОТДЕЛЬНЫЙ ОБРАБОТЧИК"""
     user_id = update.effective_user.id
     
     # Админы всегда могут использовать бот
@@ -401,6 +401,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message, reply_markup=reply_markup)
     else:
         # Если техобслуживание закончилось, возвращаем в меню
+        await update.message.reply_text("✅ Бот снова активен! Возвращаемся в меню...")
         await start(update, context)
 
 # --- НОВАЯ ФУНКЦИЯ: Очистка старых просмотренных анкет ---
@@ -730,6 +731,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         return GENDER
 
+# ... (остальные функции остаются без изменений)
+
 @auto_save
 async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the gender and asks for the name."""
@@ -903,7 +906,8 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     # ОСОБЫЙ СЛУЧАЙ: обработка кнопки "Проверить статус" в состоянии MENU
     if update.message.text == "🔄 Проверить статус":
-        return await check_status(update, context)
+        await check_status(update, context)
+        return ConversationHandler.END
     
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
