@@ -381,8 +381,8 @@ async def check_maintenance_for_user(user_id: int) -> bool:
     return maintenance_status['maintenance_mode']
 
 # --- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка статуса ---
-async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса бота во время техобслуживания - ОТДЕЛЬНЫЙ ОБРАБОТЧИК"""
+async def check_status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ОБРАБОТЧИК для кнопки 'Проверить статус' - работает ВНЕ ConversationHandler"""
     user_id = update.effective_user.id
     
     # Админы всегда могут использовать бот
@@ -903,11 +903,6 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu for the user."""
     user_id = update.effective_user.id
-    
-    # ОСОБЫЙ СЛУЧАЙ: обработка кнопки "Проверить статус" в состоянии MENU
-    if update.message.text == "🔄 Проверить статус":
-        await check_status(update, context)
-        return ConversationHandler.END
     
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
@@ -1541,7 +1536,6 @@ def main() -> None:
                 MessageHandler(filters.Regex("^Поиск$"), search_profile),
                 MessageHandler(filters.Regex("^Настройки$"), settings),
                 MessageHandler(filters.Regex("^⚙️ Админка$"), admin_panel),
-                MessageHandler(filters.Regex("^🔄 Проверить статус$"), check_status),
             ],
             SEARCH: [
                 MessageHandler(filters.Regex("^❤️ Лайк$"), like),
@@ -1584,6 +1578,9 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel), MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, back_to_menu)],
     )
 
+    # 🔥 ВАЖНО: Добавляем ОТДЕЛЬНЫЙ обработчик для кнопки "Проверить статус" ВНЕ ConversationHandler
+    application.add_handler(MessageHandler(filters.Regex("^🔄 Проверить статус$"), check_status_handler))
+    
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(handle_match_response))
 
