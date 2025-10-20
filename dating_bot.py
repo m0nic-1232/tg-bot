@@ -417,7 +417,7 @@ async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """Очищает историю просмотренных анкет, лайки и дизлайки"""
     user_id = update.effective_user.id
     if await check_maintenance(update, context, user_id):
-        return MENU
+        return ConversationHandler.END
         
     user_data = context.user_data
     
@@ -437,7 +437,7 @@ async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полный сброс для тестирования"""
     user_id = update.effective_user.id
     if await check_maintenance(update, context, user_id):
-        return MENU
+        return ConversationHandler.END
         
     user_data = context.user_data
     
@@ -730,8 +730,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         return GENDER
 
-# ... (остальные функции остаются аналогичными, но с обновленной проверкой техобслуживания)
-
 @auto_save
 async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the gender and asks for the name."""
@@ -902,6 +900,11 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu for the user."""
     user_id = update.effective_user.id
+    
+    # ОСОБЫЙ СЛУЧАЙ: обработка кнопки "Проверить статус" в состоянии MENU
+    if update.message.text == "🔄 Проверить статус":
+        return await check_status(update, context)
+    
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
