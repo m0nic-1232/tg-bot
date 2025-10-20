@@ -192,15 +192,15 @@ async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("🎯 Полный сброс выполнен! Все анкеты будут показаны заново.")
 
-# --- НОВАЯ ФУНКЦИЯ: Статистика бота ---
-async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статистику бота только админам"""
+# --- НОВАЯ ФУНКЦИЯ: Статистика через кнопку для админов ---
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает статистику бота только админам через кнопку"""
     user_id = update.effective_user.id
     
     # Проверяем, что пользователь в списке админов
     if user_id not in ADMIN_USER_IDS:
-        await update.message.reply_text("У вас нет доступа к этой команде.")
-        return
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return MENU
     
     # Собираем статистику
     total_profiles = len(user_profiles)
@@ -226,6 +226,7 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_text += f"• {gender}: {count}\n"
     
     await update.message.reply_text(stats_text)
+    return MENU
 
 # --- НОВАЯ ФУНКЦИЯ: Команда для техобслуживания ---
 async def maintenance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,11 +437,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_profiles[user_id]["username"] = update.message.from_user.username
 
     if is_profile_complete(user_id):
+        # Базовая клавиатура для всех пользователей
         keyboard = [
             [KeyboardButton("Поиск")],
             [KeyboardButton("Настройки")],
         ]
+        
+        # Добавляем кнопку статистики только для админов
+        if user_id in ADMIN_USER_IDS:
+            keyboard.append([KeyboardButton("📊 Статистика")])
+            
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
         await update.message.reply_text(
             "Привет! Твой профиль уже заполнен. Что хочешь сделать?",
             reply_markup=reply_markup,
@@ -575,11 +583,18 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """Confirms the profile or allows editing."""
     user_id = update.message.from_user.id
     if update.message.text == "Да, все верно":
+        # Базовая клавиатура для всех пользователей
         keyboard = [
             [KeyboardButton("Поиск")],
             [KeyboardButton("Настройки")],
         ]
+        
+        # Добавляем кнопку статистики только для админов
+        if user_id in ADMIN_USER_IDS:
+            keyboard.append([KeyboardButton("📊 Статистика")])
+            
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
         await update.message.reply_text(
             "Твой профиль успешно создан! Теперь ты можешь начать поиск.",
             reply_markup=reply_markup,
@@ -593,17 +608,28 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu for the user."""
+    user_id = update.effective_user.id
     text = update.message.text
+    
+    # Базовая клавиатура для всех пользователей
+    keyboard = [
+        [KeyboardButton("Поиск")],
+        [KeyboardButton("Настройки")],
+    ]
+    
+    # Добавляем кнопку статистики только для админов
+    if user_id in ADMIN_USER_IDS:
+        keyboard.append([KeyboardButton("📊 Статистика")])
+    
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
     if text == "Поиск":
         return await search_profile(update, context)
     elif text == "Настройки":
         return await settings(update, context)
+    elif text == "📊 Статистика" and user_id in ADMIN_USER_IDS:
+        return await admin_stats(update, context)
     else:
-        keyboard = [
-            [KeyboardButton("Поиск")],
-            [KeyboardButton("Настройки")],
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Пожалуйста, выберите действие:", reply_markup=reply_markup)
         return MENU
 
@@ -684,6 +710,8 @@ async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows settings options."""
+    user_id = update.effective_user.id
+    
     keyboard = [
         [KeyboardButton("Редактировать профиль")],
         [KeyboardButton("Мой профиль")],
@@ -844,10 +872,18 @@ async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Returns to the main menu."""
+    user_id = update.effective_user.id
+    
+    # Базовая клавиатура для всех пользователей
     keyboard = [
         [KeyboardButton("Поиск")],
         [KeyboardButton("Настройки")],
     ]
+    
+    # Добавляем кнопку статистики только для админов
+    if user_id in ADMIN_USER_IDS:
+        keyboard.append([KeyboardButton("📊 Статистика")])
+    
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Возвращаемся в меню.", reply_markup=reply_markup)
     return MENU
@@ -922,10 +958,17 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
             text="Произошла ошибка при обработке вашего ответа."
         )
 
+    user_id = liked_id
+    # Базовая клавиатура для всех пользователей
     keyboard = [
         [KeyboardButton("Поиск")],
         [KeyboardButton("Настройки")],
     ]
+    
+    # Добавляем кнопку статистики только для админов
+    if user_id in ADMIN_USER_IDS:
+        keyboard.append([KeyboardButton("📊 Статистика")])
+    
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     try:
@@ -970,6 +1013,7 @@ def main() -> None:
             MENU: [
                 MessageHandler(filters.Regex("^Поиск$"), search),
                 MessageHandler(filters.Regex("^Настройки$"), settings),
+                MessageHandler(filters.Regex("^📊 Статистика$"), admin_stats),  # Обработчик кнопки статистики
             ],
             SEARCH: [
                 MessageHandler(filters.Regex("^❤️ Лайк$"), like),
@@ -1004,8 +1048,7 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(handle_match_response))
 
-    # ✅ ВАЖНО: Добавляем команды ВНЕ ConversationHandler чтобы они работали всегда
-    application.add_handler(CommandHandler("stats", stats_handler))
+    # Команды для админов (работают всегда)
     application.add_handler(CommandHandler("clear", clear_history_handler))
     application.add_handler(CommandHandler("reset", reset_all_handler))
     application.add_handler(CommandHandler("maintenance", maintenance_handler))
