@@ -597,7 +597,7 @@ async def save_maintenance_message(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text("✅ Сообщение техобслуживания обновлено!")
     return await maintenance_management(update, context)
 
-# --- ОСНОВНЫЕ ФУНКЦИИ БОТА (обновленные с проверкой техобслуживания) ---
+# --- ОСНОВНЫЕ ФУНКЦИИ БОТА ---
 def is_profile_complete(user_id):
     profile = user_profiles.get(user_id)
     return (
@@ -884,6 +884,219 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("Пожалуйста, выберите действие:", reply_markup=reply_markup)
         return MENU
 
+# --- ФУНКЦИИ РЕДАКТИРОВАНИЯ ПРОФИЛЯ ---
+async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Allows user to choose what to edit."""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    keyboard = [
+        [KeyboardButton("Пол"), KeyboardButton("Имя"), KeyboardButton("Возраст")],
+        [KeyboardButton("Курс"), KeyboardButton("О себе"), KeyboardButton("Фото")],
+        [KeyboardButton("Готово")],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Что вы хотите изменить?", reply_markup=reply_markup)
+    return EDIT_PROFILE
+
+@auto_save
+async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования пола"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    keyboard = [["Мужской"], ["Женский"], ["Другое"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text("Укажите новый пол:", reply_markup=reply_markup)
+    return EDIT_GENDER
+
+@auto_save
+async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного пола"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    user_profiles[user_id]["gender"] = update.message.text
+    db.save_user(user_id, user_profiles[user_id])
+    await update.message.reply_text("Пол обновлен.")
+    return await edit_profile(update, context)
+
+@auto_save
+async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования имени"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Укажите новое имя:")
+    return EDIT_NAME
+
+@auto_save
+async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного имени"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    user_profiles[user_id]["name"] = update.message.text
+    db.save_user(user_id, user_profiles[user_id])
+    await update.message.reply_text("Имя обновлено.")
+    return await edit_profile(update, context)
+
+@auto_save
+async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования возраста"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Укажите новый возраст (от 16 до 25):")
+    return EDIT_AGE
+
+@auto_save
+async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного возраста"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    try:
+        age = int(update.message.text)
+        if age < 16 or age > 25:
+            await update.message.reply_text("Пожалуйста, укажите реальный возраст (16-25):")
+            return EDIT_AGE
+        user_profiles[user_id]["age"] = age
+        db.save_user(user_id, user_profiles[user_id])
+        await update.message.reply_text("Возраст обновлен.")
+        return await edit_profile(update, context)
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, укажите возраст цифрами.")
+        return EDIT_AGE
+
+@auto_save
+async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования курса"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Укажите новый курс (от 1 до 5):")
+    return EDIT_CITY
+
+@auto_save
+async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного курса"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    try:
+        course = int(update.message.text)
+        if course < 1 or course > 5:
+            await update.message.reply_text("Пожалуйста, укажите реальный курс (1-5):")
+            return EDIT_CITY
+        user_profiles[user_id]["city"] = course
+        db.save_user(user_id, user_profiles[user_id])
+        await update.message.reply_text("Курс обновлен.")
+        return await edit_profile(update, context)
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, укажите курс цифрами (1-5).")
+        return EDIT_CITY
+
+@auto_save
+async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования описания"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Напишите новое описание о себе:")
+    return EDIT_BIO
+
+@auto_save
+async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного описания"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    user_profiles[user_id]["bio"] = update.message.text
+    db.save_user(user_id, user_profiles[user_id])
+    await update.message.reply_text("Описание обновлено.")
+    return await edit_profile(update, context)
+
+@auto_save
+async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало редактирования фото"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Отправьте новую фотографию:")
+    return EDIT_PHOTO
+
+@auto_save
+async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохранение отредактированного фото"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    if update.message.photo:
+        photo_file_id = update.message.photo[-1].file_id
+        user_profiles[user_id]["photo"] = photo_file_id
+        db.save_user(user_id, user_profiles[user_id])
+        await update.message.reply_text("Фотография обновлена.")
+        return await edit_profile(update, context)
+    else:
+        await update.message.reply_text("Пожалуйста, отправьте фотографию.")
+        return EDIT_PHOTO
+
+async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение редактирования профиля"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    await update.message.reply_text("Изменения сохранены.", reply_markup=ReplyKeyboardRemove())
+    return await settings(update, context)
+
+async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает профиль пользователя"""
+    if await check_maintenance(update, context):
+        return MENU
+        
+    user_id = update.message.from_user.id
+    if not is_profile_complete(user_id):
+        await update.message.reply_text("Ваш профиль еще не заполнен.")
+        return MENU
+
+    profile = user_profiles[user_id]
+    bio_text = profile.get("bio", "Нет информации")
+    message_text = (
+        f"Твой профиль:\n"
+        f"Пол: {profile['gender']}\n"
+        f"Имя: {profile['name']}\n"
+        f"Возраст: {profile['age']}\n"
+        f"Курс: {profile['city']}\n"
+        f"О себе: {bio_text}"
+    )
+
+    keyboard = [
+        [KeyboardButton("Редактировать профиль")],
+        [KeyboardButton("⬅️ Меню")],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    if profile.get("photo"):
+        await context.bot.send_photo(
+            chat_id=user_id,
+            photo=profile["photo"],
+            caption=message_text,
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            message_text + "\n(Фото отсутствует)",
+            reply_markup=reply_markup
+        )
+    return SETTINGS
+
 # --- ОБНОВЛЕННАЯ ФУНКЦИЯ: Поиск следующей анкеты ---
 async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if await check_maintenance(update, context):
@@ -1106,21 +1319,6 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Настройки:", reply_markup=reply_markup)
     return SETTINGS
-
-# ... (остальные функции редактирования профиля остаются без изменений, но с добавлением db.save_user)
-
-@auto_save
-async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if await check_maintenance(update, context):
-        return MENU
-        
-    user_id = update.message.from_user.id
-    user_profiles[user_id]["gender"] = update.message.text
-    db.save_user(user_id, user_profiles[user_id])
-    await update.message.reply_text("Пол обновлен.")
-    return await edit_profile(update, context)
-
-# ... (аналогично для других функций редактирования - добавляем db.save_user)
 
 # --- CallbackQueryHandler for InlineKeyboardButtons ---
 @auto_save
