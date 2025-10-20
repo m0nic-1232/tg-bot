@@ -349,7 +349,7 @@ def startup_notice():
     
     print("="*50 + "\n")
 
-# --- ПРОВЕРКА ТЕХОБСЛУЖИВАНИЯ ---
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ: Проверка техобслуживания ---
 async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Проверяет, находится ли бот в режиме техобслуживания"""
     maintenance_status = db.get_maintenance_status()
@@ -363,6 +363,27 @@ async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(message, reply_markup=reply_markup)
         return True
     return False
+
+async def check_maintenance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверка техобслуживания для callback обработчиков"""
+    maintenance_status = db.get_maintenance_status()
+    return maintenance_status['maintenance_mode']
+
+# --- НОВАЯ ФУНКЦИЯ: Проверка статуса ---
+async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса бота во время техобслуживания"""
+    maintenance_status = db.get_maintenance_status()
+    
+    if maintenance_status['maintenance_mode']:
+        message = maintenance_status['maintenance_message'] or "⚙️ Бот все еще находится на техническом обслуживании. Пожалуйста, попробуйте позже."
+        
+        keyboard = [[KeyboardButton("🔄 Проверить статус")]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    else:
+        # Если техобслуживание закончилось, возвращаем в меню
+        await start(update, context)
 
 # --- НОВАЯ ФУНКЦИЯ: Очистка старых просмотренных анкет ---
 def clear_old_viewed_profiles(user_data):
@@ -539,7 +560,7 @@ async def maintenance_management(update: Update, context: ContextTypes.DEFAULT_T
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await update.message.reply_text(
-        f"🛠️ **Управление техобслуживанием**\n\n"
+        f"🛠️ **Управление техобслуживания**\n\n"
         f"Статус: {status_text}\n"
         f"Сообщение: {message_text}\n\n"
         f"Выберите действие:",
@@ -647,12 +668,13 @@ async def send_profile_card(user_id: int, target_user_id: int, context: ContextT
             reply_markup=reply_markup
         )
 
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ START ---
 @auto_save
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks the user about their gender."""
-    # Проверяем техобслуживание
+    # Проверяем техобслуживание в самом начале
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     # Store username early
@@ -693,7 +715,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the gender and asks for the name."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     context.user_data["gender"] = update.message.text
@@ -715,7 +737,7 @@ async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the name and asks for the age."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     context.user_data["name"] = update.message.text
@@ -729,7 +751,7 @@ async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the age and asks for the city."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     try:
@@ -753,7 +775,7 @@ async def age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the city (course) and asks for the bio."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     try:
@@ -777,7 +799,7 @@ async def city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the bio and asks for a photo."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     context.user_data["bio"] = update.message.text
@@ -791,7 +813,7 @@ async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the photo and asks for confirmation."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     if update.message.photo:
@@ -831,7 +853,7 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Confirms the profile or allows editing."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     if update.message.text == "Да, все верно":
@@ -859,7 +881,7 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu for the user."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.effective_user.id
     text = update.message.text
@@ -888,7 +910,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Allows user to choose what to edit."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     keyboard = [
         [KeyboardButton("Пол"), KeyboardButton("Имя"), KeyboardButton("Возраст")],
@@ -903,7 +925,7 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования пола"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     keyboard = [["Мужской"], ["Женский"], ["Другое"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -914,7 +936,7 @@ async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного пола"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     user_profiles[user_id]["gender"] = update.message.text
@@ -926,7 +948,7 @@ async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования имени"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Укажите новое имя:")
     return EDIT_NAME
@@ -935,7 +957,7 @@ async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного имени"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     user_profiles[user_id]["name"] = update.message.text
@@ -947,7 +969,7 @@ async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования возраста"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Укажите новый возраст (от 16 до 25):")
     return EDIT_AGE
@@ -956,7 +978,7 @@ async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного возраста"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     try:
@@ -976,7 +998,7 @@ async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования курса"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Укажите новый курс (от 1 до 5):")
     return EDIT_CITY
@@ -985,7 +1007,7 @@ async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного курса"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     try:
@@ -1005,7 +1027,7 @@ async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования описания"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Напишите новое описание о себе:")
     return EDIT_BIO
@@ -1014,7 +1036,7 @@ async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного описания"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     user_profiles[user_id]["bio"] = update.message.text
@@ -1026,7 +1048,7 @@ async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования фото"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Отправьте новую фотографию:")
     return EDIT_PHOTO
@@ -1035,7 +1057,7 @@ async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного фото"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     if update.message.photo:
@@ -1051,7 +1073,7 @@ async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Завершение редактирования профиля"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     await update.message.reply_text("Изменения сохранены.", reply_markup=ReplyKeyboardRemove())
     return await settings(update, context)
@@ -1059,7 +1081,7 @@ async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает профиль пользователя"""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     if not is_profile_complete(user_id):
@@ -1100,7 +1122,7 @@ async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # --- ОБНОВЛЕННАЯ ФУНКЦИЯ: Поиск следующей анкеты ---
 async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.message.from_user.id
     user_data = context.user_data
@@ -1165,6 +1187,10 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # --- Notification functions ---
 @auto_save
 async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем техобслуживание для уведомлений
+    if await check_maintenance_callback(update, context):
+        return
+        
     liker_profile = user_profiles.get(liker_id)
     if not liker_profile:
         logger.error(f"Liker profile not found for ID: {liker_id}")
@@ -1185,6 +1211,10 @@ async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.
 
 @auto_save
 async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем техобслуживание для уведомлений
+    if await check_maintenance_callback(update, context):
+        return
+        
     user1_profile = user_profiles.get(user1_id)
     user2_profile = user_profiles.get(user2_id)
 
@@ -1222,7 +1252,7 @@ async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAU
 async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User likes the current profile."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     liker_id = update.message.from_user.id
     liked_id = context.user_data.get('current_viewing_profile_id')
@@ -1269,7 +1299,7 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User dislikes the current profile."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     disliker_id = update.message.from_user.id
     disliked_id = context.user_data.get('current_viewing_profile_id')
@@ -1306,7 +1336,7 @@ async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows settings options."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.effective_user.id
     
@@ -1325,6 +1355,12 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+
+    # Проверяем техобслуживание для callback
+    maintenance_status = db.get_maintenance_status()
+    if maintenance_status['maintenance_mode']:
+        await query.edit_message_text("⚙️ Бот находится на техническом обслуживании. Пожалуйста, попробуйте позже.")
+        return
 
     liked_id = query.from_user.id
     callback_data = query.data
@@ -1410,7 +1446,7 @@ async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Returns to the main menu."""
     if await check_maintenance(update, context):
-        return MENU
+        return ConversationHandler.END
         
     user_id = update.effective_user.id
     
@@ -1469,6 +1505,7 @@ def main() -> None:
                 MessageHandler(filters.Regex("^Поиск$"), search_profile),
                 MessageHandler(filters.Regex("^Настройки$"), settings),
                 MessageHandler(filters.Regex("^⚙️ Админка$"), admin_panel),
+                MessageHandler(filters.Regex("^🔄 Проверить статус$"), check_status),
             ],
             SEARCH: [
                 MessageHandler(filters.Regex("^❤️ Лайк$"), like),
