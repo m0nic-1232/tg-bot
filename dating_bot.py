@@ -61,7 +61,7 @@ user_dislikes = {}
 matched_users = {}
 
 # Админы бота
-ADMIN_USER_IDS = [5652528225]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
+ADMIN_USER_IDS = [123456789, 987654321]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
 
 # --- ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ---
 def save_data():
@@ -98,10 +98,12 @@ def load_data():
 def setup_data_persistence():
     """Настраивает автосохранение при выходе"""
     def save_on_exit():
+        maintenance_notice()  # Оповещение при выходе
         save_data()
         logger.info("Data saved on exit")
     
     def save_on_signal(signum, frame):
+        maintenance_notice()  # Оповещение при сигнале
         save_data()
         logger.info(f"Data saved on signal {signum}")
         exit(0)
@@ -117,6 +119,32 @@ def auto_save(func):
         save_data()
         return result
     return wrapper
+
+# --- ОПОВЕЩЕНИЯ В КОНСОЛИ ---
+def maintenance_notice():
+    """Оповещение о техобслуживании в консоли"""
+    print("\n" + "="*60)
+    print("🛠️  БОТ УХОДИТ НА ТЕХНИЧЕСКОЕ ОБСЛУЖИВАНИЕ")
+    print("🕐 Время остановки:", time.strftime("%Y-%m-%d %H:%M:%S"))
+    print("📈 Статистика перед остановкой:")
+    print(f"   👥 Пользователей: {len(user_profiles)}")
+    print(f"   ✅ Заполненных анкет: {len([uid for uid in user_profiles if is_profile_complete(uid)])}")
+    print(f"   ❤️  Всего лайков: {sum(len(likes) for likes in user_likes.values())}")
+    print(f"   💞 Совпадений: {sum(len(matches) for matches in matched_users.values()) // 2}")
+    print(f"   📊 Активных сессий: {len(user_profiles)}")
+    print("💾 Сохранение данных...")
+    print("="*60 + "\n")
+
+def startup_notice():
+    """Оповещение о запуске бота"""
+    print("\n" + "="*50)
+    print("🚀 БОТ ЗАПУЩЕН")
+    print("🕐 Время запуска:", time.strftime("%Y-%m-%d %H:%M:%S"))
+    print("📥 Загружено данных:")
+    print(f"   👥 Пользователей: {len(user_profiles)}")
+    print(f"   ❤️  Лайков: {sum(len(likes) for likes in user_likes.values())}")
+    print(f"   💞 Совпадений: {sum(len(matches) for matches in matched_users.values()) // 2}")
+    print("="*50 + "\n")
 
 # --- НОВАЯ ФУНКЦИЯ: Очистка старых просмотренных анкет ---
 def clear_old_viewed_profiles(user_data):
@@ -198,6 +226,32 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_text += f"• {gender}: {count}\n"
     
     await update.message.reply_text(stats_text)
+
+# --- НОВАЯ ФУНКЦИЯ: Команда для техобслуживания ---
+async def maintenance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Плановое техобслуживание - команда для админов"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+    
+    # Оповещение в консоли
+    maintenance_notice()
+    
+    # Оповещение в Telegram админу
+    await update.message.reply_text(
+        "🔧 **Плановое техобслуживание**\n"
+        "✅ Данные успешно сохранены\n"
+        "📊 Статистика перед остановкой:\n"
+        f"• Пользователей: {len(user_profiles)}\n"
+        f"• Анкет: {len([uid for uid in user_profiles if is_profile_complete(uid)])}\n"
+        f"• Лайков: {sum(len(likes) for likes in user_likes.values())}\n"
+        "⏸️  Останавливаю бота..."
+    )
+    
+    # Graceful shutdown
+    await context.application.stop()
 
 # Function to check if the user profile is complete
 def is_profile_complete(user_id):
@@ -887,6 +941,7 @@ def main() -> None:
     """Run the bot."""
     # Загружаем данные при старте
     load_data()
+    startup_notice()  # Оповещение о запуске
     setup_data_persistence()
     
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -948,9 +1003,12 @@ def main() -> None:
 
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(handle_match_response))
+
+    # ✅ ВАЖНО: Добавляем команды ВНЕ ConversationHandler чтобы они работали всегда
+    application.add_handler(CommandHandler("stats", stats_handler))
     application.add_handler(CommandHandler("clear", clear_history_handler))
     application.add_handler(CommandHandler("reset", reset_all_handler))
-    application.add_handler(CommandHandler("stats", stats_handler))
+    application.add_handler(CommandHandler("maintenance", maintenance_handler))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
