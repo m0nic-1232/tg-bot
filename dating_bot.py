@@ -3,6 +3,10 @@ import logging
 import os
 import random
 import time
+import json
+import pickle
+import signal
+import atexit
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,14 +17,17 @@ from telegram.ext import (
     ContextTypes,
     filters,
     ApplicationBuilder,
-    CallbackQueryHandler, # Импортируем CallbackQueryHandler
+    CallbackQueryHandler,
 )
 
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logger = logging.getLogger(__name__) # Исправлено на __name__
+logger = logging.getLogger(__name__)
+
+# Файл для сохранения данных
+DATA_FILE = "bot_data.pkl"
 
 # States for the conversation
 (
@@ -33,8 +40,6 @@ logger = logging.getLogger(__name__) # Исправлено на __name__
     CONFIRMATION,
     MENU,
     SEARCH,
-    # LIKE и DISLIKE теперь обрабатываются как действия внутри SEARCH,
-    # а не отдельные состояния, но оставим их для ясности, если понадобится
     LIKE,
     DISLIKE,
     SETTINGS,
@@ -45,19 +50,73 @@ logger = logging.getLogger(__name__) # Исправлено на __name__
     EDIT_CITY,
     EDIT_BIO,
     EDIT_PHOTO,
-    PENDING_MATCH_RESPONSE, # Новое состояние для пользователей, ожидающих ответа на лайк
+    PENDING_MATCH_RESPONSE,
     END
-) = range(21) # Обновлено до 21 состояния
+) = range(21)
 
-# Global dictionary to store user profiles (replace with a database in production)
-# Structure: {user_id: {"gender": "...", "name": "...", "age": ..., "city": "...", "bio": "...", "photo": "file_id", "username": "@telegram_username"}}
+# Global dictionaries to store data
 user_profiles = {}
-# Structure: {user_id: {liked_user_id1, liked_user_id2, ...}}
-user_likes = {} # Stores who user_id has liked
-# Structure: {user_id: {disliked_user_id1, disliked_user_id2, ...}}
-user_dislikes = {} # Stores who user_id has disliked
-# Structure: {user_id: {matched_user_id1, matched_user_id2, ...}}
-matched_users = {} # Stores mutual matches
+user_likes = {}
+user_dislikes = {}
+matched_users = {}
+
+# Админы бота
+ADMIN_USER_IDS = [5652528225]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
+
+# --- ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ---
+def save_data():
+    """Сохраняет все данные в файл"""
+    data = {
+        'user_profiles': user_profiles,
+        'user_likes': user_likes,
+        'user_dislikes': user_dislikes,
+        'matched_users': matched_users
+    }
+    try:
+        with open(DATA_FILE, 'wb') as f:
+            pickle.dump(data, f)
+        logger.info("Data saved successfully")
+    except Exception as e:
+        logger.error(f"Error saving data: {e}")
+
+def load_data():
+    """Загружает данные из файла"""
+    global user_profiles, user_likes, user_dislikes, matched_users
+    try:
+        with open(DATA_FILE, 'rb') as f:
+            data = pickle.load(f)
+            user_profiles = data.get('user_profiles', {})
+            user_likes = data.get('user_likes', {})
+            user_dislikes = data.get('user_dislikes', {})
+            matched_users = data.get('matched_users', {})
+        logger.info(f"Data loaded: {len(user_profiles)} profiles, {sum(len(l) for l in user_likes.values())} likes")
+    except FileNotFoundError:
+        logger.info("No existing data file, starting fresh")
+    except Exception as e:
+        logger.error(f"Error loading data: {e}")
+
+def setup_data_persistence():
+    """Настраивает автосохранение при выходе"""
+    def save_on_exit():
+        save_data()
+        logger.info("Data saved on exit")
+    
+    def save_on_signal(signum, frame):
+        save_data()
+        logger.info(f"Data saved on signal {signum}")
+        exit(0)
+    
+    atexit.register(save_on_exit)
+    signal.signal(signal.SIGINT, save_on_signal)
+    signal.signal(signal.SIGTERM, save_on_signal)
+
+# Декоратор для автоматического сохранения
+def auto_save(func):
+    async def wrapper(*args, **kwargs):
+        result = await func(*args, **kwargs)
+        save_data()
+        return result
+    return wrapper
 
 # --- НОВАЯ ФУНКЦИЯ: Очистка старых просмотренных анкет ---
 def clear_old_viewed_profiles(user_data):
@@ -69,6 +128,7 @@ def clear_old_viewed_profiles(user_data):
             logger.info(f"Cleared old viewed profiles, now {len(user_data['viewed_profiles'])} remaining")
 
 # --- НОВАЯ ФУНКЦИЯ: Команда для очистки истории ---
+@auto_save
 async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Очищает историю просмотренных анкет, лайки и дизлайки"""
     user_id = update.effective_user.id
@@ -87,6 +147,7 @@ async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text("✅ История полностью очищена! Теперь вы увидите все анкеты заново.")
 
 # --- НОВАЯ ФУНКЦИЯ: Полный сброс ---
+@auto_save
 async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полный сброс для тестирования"""
     user_id = update.effective_user.id
@@ -103,6 +164,41 @@ async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("🎯 Полный сброс выполнен! Все анкеты будут показаны заново.")
 
+# --- НОВАЯ ФУНКЦИЯ: Статистика бота ---
+async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статистику бота только админам"""
+    user_id = update.effective_user.id
+    
+    # Проверяем, что пользователь в списке админов
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+    
+    # Собираем статистику
+    total_profiles = len(user_profiles)
+    complete_profiles = len([uid for uid in user_profiles if is_profile_complete(uid)])
+    total_likes = sum(len(likes) for likes in user_likes.values())
+    total_matches = sum(len(matches) for matches in matched_users.values()) // 2
+    
+    stats_text = (
+        f"📊 **Статистика бота:**\n"
+        f"• Всего пользователей: {total_profiles}\n"
+        f"• Заполненных анкет: {complete_profiles}\n"
+        f"• Всего лайков: {total_likes}\n"
+        f"• Совпадений: {total_matches}\n"
+        f"\n**По полу:**\n"
+    )
+    
+    gender_stats = {}
+    for profile in user_profiles.values():
+        gender = profile.get('gender', 'Не указан')
+        gender_stats[gender] = gender_stats.get(gender, 0) + 1
+    
+    for gender, count in gender_stats.items():
+        stats_text += f"• {gender}: {count}\n"
+    
+    await update.message.reply_text(stats_text)
+
 # Function to check if the user profile is complete
 def is_profile_complete(user_id):
     profile = user_profiles.get(user_id)
@@ -114,7 +210,7 @@ def is_profile_complete(user_id):
         and profile.get("city")
         and profile.get("bio")
         and profile.get("photo")
-        and profile.get("username") # Ensure username is also stored
+        and profile.get("username")
     )
 
 # --- Helper function to display a profile ---
@@ -128,7 +224,7 @@ async def send_profile_card(user_id: int, target_user_id: int, context: ContextT
     message_text = (
         f"Имя: {profile['name']}\n"
         f"Возраст: {profile['age']}\n"
-        f"Курс: {profile['city']}\n" # Assuming 'city' is used for 'курс'
+        f"Курс: {profile['city']}\n"
         f"О себе: {bio_text}"
     )
 
@@ -204,7 +300,7 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                                 [KeyboardButton("Поиск")],
                                                 [KeyboardButton("Настройки")]
                                             ], resize_keyboard=True))
-            return MENU # Go back to menu if no profiles
+            return MENU
 
     # Выбираем случайную анкету из доступных
     next_profile_id = random.choice(available_profiles)
@@ -220,6 +316,7 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return SEARCH
 
 # --- Notification functions ---
+@auto_save
 async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.DEFAULT_TYPE):
     liker_profile = user_profiles.get(liker_id)
     if not liker_profile:
@@ -237,10 +334,11 @@ async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.
     await context.bot.send_message(
         chat_id=liked_id,
         text="Тебя лайкнули! Вот чья анкета:",
-        reply_markup=ReplyKeyboardRemove() # Удаляем текущую клавиатуру, чтобы инлайн-кнопки были видны
+        reply_markup=ReplyKeyboardRemove()
     )
     await send_profile_card(liked_id, liker_id, context, reply_markup)
 
+@auto_save
 async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAULT_TYPE):
     user1_profile = user_profiles.get(user1_id)
     user2_profile = user_profiles.get(user2_id)
@@ -273,9 +371,8 @@ async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAU
         matched_users[user2_id] = set()
     matched_users[user2_id].add(user1_id)
 
-
 # --- Conversation Handlers ---
-
+@auto_save
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks the user about their gender."""
     user_id = update.message.from_user.id
@@ -294,7 +391,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Привет! Твой профиль уже заполнен. Что хочешь сделать?",
             reply_markup=reply_markup,
         )
-        return MENU  # Go to the menu state
+        return MENU
     else:
         keyboard = [["Мужской"], ["Женский"], ["Другое"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -306,7 +403,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         return GENDER
 
-
+@auto_save
 async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the gender and asks for the name."""
     user_id = update.message.from_user.id
@@ -314,55 +411,65 @@ async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if user_id not in user_profiles:
         user_profiles[user_id] = {}
     user_profiles[user_id]["gender"] = update.message.text
-    # Ensure username is stored even if profile was partially created before
     if "username" not in user_profiles[user_id]:
         user_profiles[user_id]["username"] = update.message.from_user.username
-
 
     await update.message.reply_text(
         "Отлично! Теперь укажи свое имя:", reply_markup=ReplyKeyboardRemove()
     )
     return NAME
 
-
+@auto_save
 async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the name and asks for the age."""
     user_id = update.message.from_user.id
     context.user_data["name"] = update.message.text
     user_profiles[user_id]["name"] = update.message.text
 
-    await update.message.reply_text("Сколько тебе лет?")
+    await update.message.reply_text("Сколько тебе лет? (от 16 до 25)")
     return AGE
 
-
+@auto_save
 async def age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the age and asks for the city."""
     user_id = update.message.from_user.id
     try:
         age = int(update.message.text)
-        if age < 16 or age > 100:
+        if age < 16 or age > 25:
             await update.message.reply_text(
-                "Пожалуйста, укажите реальный возраст (16-100):"
+                "Пожалуйста, укажите реальный возраст (16-25):"
             )
             return AGE
         context.user_data["age"] = age
         user_profiles[user_id]["age"] = age
 
-        await update.message.reply_text("Укажите свой курс")
+        await update.message.reply_text("Укажите свой курс (от 1 до 5):")
         return CITY
     except ValueError:
         await update.message.reply_text("Пожалуйста, укажите возраст цифрами.")
         return AGE
 
+@auto_save
 async def city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the city (course) and asks for the bio."""
     user_id = update.message.from_user.id
-    context.user_data["city"] = update.message.text # Using 'city' for 'курс'
-    user_profiles[user_id]["city"] = update.message.text
+    try:
+        course = int(update.message.text)
+        if course < 1 or course > 5:
+            await update.message.reply_text(
+                "Пожалуйста, укажите реальный курс (1-5):"
+            )
+            return CITY
+        context.user_data["city"] = course
+        user_profiles[user_id]["city"] = course
 
-    await update.message.reply_text("Расскажи немного о себе (интересы, хобби и т.д.):")
-    return BIO
+        await update.message.reply_text("Расскажи немного о себе (интересы, хобби и т.д.):")
+        return BIO
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, укажите курс цифрами (1-5).")
+        return CITY
 
+@auto_save
 async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the bio and asks for a photo."""
     user_id = update.message.from_user.id
@@ -372,6 +479,7 @@ async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Теперь отправь свою лучшую фотографию:")
     return PHOTO
 
+@auto_save
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the photo and asks for confirmation."""
     user_id = update.message.from_user.id
@@ -408,11 +516,11 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("Пожалуйста, отправь фотографию.")
         return PHOTO
 
+@auto_save
 async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Confirms the profile or allows editing."""
     user_id = update.message.from_user.id
     if update.message.text == "Да, все верно":
-        # Profile is complete, move to main menu
         keyboard = [
             [KeyboardButton("Поиск")],
             [KeyboardButton("Настройки")],
@@ -424,8 +532,7 @@ async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return MENU
     elif update.message.text == "Изменить":
-        # Go to edit profile menu
-        return await settings(update, context) # Re-use settings to show edit options
+        return await settings(update, context)
     else:
         await update.message.reply_text("Пожалуйста, выбери 'Да, все верно' или 'Изменить'.")
         return CONFIRMATION
@@ -450,6 +557,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the 'Поиск' command, initiating profile search."""
     return await search_profile(update, context)
 
+@auto_save
 async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User likes the current profile."""
     liker_id = update.message.from_user.id
@@ -482,15 +590,14 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         # It's a match!
         await notify_match(liker_id, liked_id, context)
         await update.message.reply_text("УРА! Это совпадение! 🎉")
-        # Continue searching for liker_id
         return await search_profile(update, context)
     else:
         # Not a mutual like yet, notify the liked_id
         await notify_liked_user(liker_id, liked_id, context)
         await update.message.reply_text("Лайк отправлен! Продолжаем поиск...")
-        # Continue searching for liker_id
         return await search_profile(update, context)
 
+@auto_save
 async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User dislikes the current profile."""
     disliker_id = update.message.from_user.id
@@ -526,7 +633,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [KeyboardButton("Редактировать профиль")],
         [KeyboardButton("Мой профиль")],
-        [KeyboardButton("Очистить историю")],  # НОВАЯ КНОПКА
+        [KeyboardButton("Очистить историю")],
         [KeyboardButton("⬅️ Меню")],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -544,38 +651,44 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await update.message.reply_text("Что вы хотите изменить?", reply_markup=reply_markup)
     return EDIT_PROFILE
 
+@auto_save
 async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [["Мужской"], ["Женский"], ["Другое"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text("Укажите новый пол:", reply_markup=reply_markup)
     return EDIT_GENDER
 
+@auto_save
 async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     user_profiles[user_id]["gender"] = update.message.text
     await update.message.reply_text("Пол обновлен.")
     return await edit_profile(update, context)
 
+@auto_save
 async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Укажите новое имя:")
     return EDIT_NAME
 
+@auto_save
 async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     user_profiles[user_id]["name"] = update.message.text
     await update.message.reply_text("Имя обновлено.")
     return await edit_profile(update, context)
 
+@auto_save
 async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Укажите новый возраст:")
+    await update.message.reply_text("Укажите новый возраст (от 16 до 25):")
     return EDIT_AGE
 
+@auto_save
 async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     try:
         age = int(update.message.text)
-        if age < 16 or age > 100:
-            await update.message.reply_text("Пожалуйста, укажите реальный возраст (16-100):")
+        if age < 16 or age > 25:
+            await update.message.reply_text("Пожалуйста, укажите реальный возраст (16-25):")
             return EDIT_AGE
         user_profiles[user_id]["age"] = age
         await update.message.reply_text("Возраст обновлен.")
@@ -584,30 +697,44 @@ async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("Пожалуйста, укажите возраст цифрами.")
         return EDIT_AGE
 
+@auto_save
 async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Укажите новый курс:")
+    await update.message.reply_text("Укажите новый курс (от 1 до 5):")
     return EDIT_CITY
 
+@auto_save
 async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
-    user_profiles[user_id]["city"] = update.message.text
-    await update.message.reply_text("Курс обновлен.")
-    return await edit_profile(update, context)
+    try:
+        course = int(update.message.text)
+        if course < 1 or course > 5:
+            await update.message.reply_text("Пожалуйста, укажите реальный курс (1-5):")
+            return EDIT_CITY
+        user_profiles[user_id]["city"] = course
+        await update.message.reply_text("Курс обновлен.")
+        return await edit_profile(update, context)
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, укажите курс цифрами (1-5).")
+        return EDIT_CITY
 
+@auto_save
 async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Напишите новое описание о себе:")
     return EDIT_BIO
 
+@auto_save
 async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     user_profiles[user_id]["bio"] = update.message.text
     await update.message.reply_text("Описание обновлено.")
     return await edit_profile(update, context)
 
+@auto_save
 async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Отправьте новую фотографию:")
     return EDIT_PHOTO
 
+@auto_save
 async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     if update.message.photo:
@@ -623,7 +750,7 @@ async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.message.from_user.id
     if not is_profile_complete(user_id):
         await update.message.reply_text("Ваш профиль еще не заполнен.")
-        return MENU # Or GENDER, to restart profile creation
+        return MENU
 
     profile = user_profiles[user_id]
     bio_text = profile.get("bio", "Нет информации")
@@ -654,7 +781,7 @@ async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             message_text + "\n(Фото отсутствует)",
             reply_markup=reply_markup
         )
-    return SETTINGS # Stay in settings menu after showing profile
+    return SETTINGS
 
 async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Returns to settings menu after editing."""
@@ -681,14 +808,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # --- CallbackQueryHandler for InlineKeyboardButtons (Like Back / Dislike Back) ---
+@auto_save
 async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()  # Acknowledge the callback query
+    await query.answer()
 
     liked_id = query.from_user.id
     callback_data = query.data
     
-    # Правильно разбираем callback_data
     if callback_data.startswith("like_back_"):
         liker_id_str = callback_data.replace("like_back_", "")
         action = "like_back"
@@ -707,23 +834,20 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if action == "like_back":
-            # Current user (liked_id) likes back the liker_id
             if liked_id not in user_likes:
                 user_likes[liked_id] = set()
             user_likes[liked_id].add(liker_id)
 
-            # It's a mutual match now!
             await notify_match(liker_id, liked_id, context)
             try:
                 await query.edit_message_text(text="УРА! Это совпадение! 🎉")
             except Exception as e:
-                logger.warning(f"Could not edit message: {e}")
+                logger.warning(f"Could not edit message, sending new one: {e}")
                 await context.bot.send_message(
                     chat_id=liked_id,
                     text="УРА! Это совпадение! 🎉"
                 )
         elif action == "dislike_back":
-            # Current user (liked_id) dislikes back the liker_id
             if liked_id not in user_dislikes:
                 user_dislikes[liked_id] = set()
             user_dislikes[liked_id].add(liker_id)
@@ -731,7 +855,7 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
             try:
                 await query.edit_message_text(text="Анкета отклонена.")
             except Exception as e:
-                logger.warning(f"Could not edit message: {e}")
+                logger.warning(f"Could not edit message, sending new one: {e}")
                 await context.bot.send_message(
                     chat_id=liked_id,
                     text="Анкета отклонена."
@@ -739,13 +863,11 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.error(f"Error in handle_match_response: {e}")
-        # Отправляем сообщение обычным способом, если редактирование не удалось
         await context.bot.send_message(
             chat_id=liked_id,
             text="Произошла ошибка при обработке вашего ответа."
         )
 
-    # After responding, the user should be able to continue with their normal flow.
     keyboard = [
         [KeyboardButton("Поиск")],
         [KeyboardButton("Настройки")],
@@ -761,21 +883,20 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Error sending menu message: {e}")
 
-
 def main() -> None:
     """Run the bot."""
-    # Create the Application and pass it your bot's token.
-    # Правильное получение токена из переменной окружения
+    # Загружаем данные при старте
+    load_data()
+    setup_data_persistence()
+    
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     
-    # Если переменная окружения не установлена, можно использовать прямое указание токена (для тестирования)
     if not token:
         token = "8284692267:AAFw8z70NazDrTdLq53iaBC-KCz1cnT35NM"
         logger.warning("Using hardcoded token. For production, set TELEGRAM_BOT_TOKEN environment variable.")
     
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN environment variable not set.")
-        logger.error("Please set the token: export TELEGRAM_BOT_TOKEN='your_token_here'")
         exit(1)
 
     application = Application.builder().token(token).build()
@@ -803,7 +924,7 @@ def main() -> None:
             SETTINGS: [
                 MessageHandler(filters.Regex("^Редактировать профиль$"), edit_profile),
                 MessageHandler(filters.Regex("^Мой профиль$"), show_my_profile),
-                MessageHandler(filters.Regex("^Очистить историю$"), clear_history_handler),  # НОВЫЙ ОБРАБОТЧИК
+                MessageHandler(filters.Regex("^Очистить историю$"), clear_history_handler),
                 MessageHandler(filters.Regex("^⬅️ Меню$"), back_to_menu),
             ],
             EDIT_PROFILE: [
@@ -826,11 +947,10 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
-    # Добавляем CallbackQueryHandler для обработки инлайн-кнопок без строгого паттерна
     application.add_handler(CallbackQueryHandler(handle_match_response))
-    # Добавляем обработчик команды /clear и /reset
     application.add_handler(CommandHandler("clear", clear_history_handler))
     application.add_handler(CommandHandler("reset", reset_all_handler))
+    application.add_handler(CommandHandler("stats", stats_handler))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
