@@ -61,7 +61,7 @@ user_dislikes = {}
 matched_users = {}
 
 # Админы бота
-ADMIN_USER_IDS = [123456789, 987654321]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
+ADMIN_USER_IDS = [5652528225]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
 
 # --- ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ---
 def save_data():
