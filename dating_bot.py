@@ -66,7 +66,7 @@ user_dislikes = {}
 matched_users = {}
 
 # Админы бота
-ADMIN_USER_IDS = [5652528225]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
+ADMIN_USER_IDS = [5652528225,1092924048]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
 
 # --- БАЗА ДАННЫХ SQLite ---
 class Database:
