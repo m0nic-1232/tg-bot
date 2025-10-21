@@ -55,8 +55,9 @@ DB_FILE = "bot_database.db"
     PENDING_MATCH_RESPONSE,
     ADMIN_PANEL,
     MAINTENANCE_NOTICE,
+    BAN_MANAGEMENT,
     END
-) = range(23)
+) = range(24)
 
 # Global dictionaries to store data
 user_profiles = {}
@@ -123,6 +124,18 @@ class Database:
                 maintenance_mode BOOLEAN DEFAULT 0,
                 maintenance_message TEXT,
                 maintenance_end TIMESTAMP
+            )
+        ''')
+        
+        # Таблица банов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bans (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                reason TEXT,
+                banned_by INTEGER,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                unbanned_at TIMESTAMP NULL
             )
         ''')
         
@@ -268,6 +281,67 @@ class Database:
         conn.commit()
         conn.close()
 
+    # --- ФУНКЦИИ ДЛЯ БАНОВ ---
+    def is_user_banned(self, user_id):
+        """Проверяет, забанен ли пользователь"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT user_id FROM bans WHERE user_id = ? AND unbanned_at IS NULL', (user_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result is not None
+
+    def ban_user(self, user_id, username, reason, admin_id):
+        """Банит пользователя"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO bans (user_id, username, reason, banned_by) 
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, username, reason, admin_id))
+        
+        conn.commit()
+        conn.close()
+
+    def unban_user(self, user_id):
+        """Разбанивает пользователя"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('UPDATE bans SET unbanned_at = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+
+    def get_banned_users(self):
+        """Получает список забаненных пользователей"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, username, reason, banned_at 
+            FROM bans 
+            WHERE unbanned_at IS NULL 
+            ORDER BY banned_at DESC
+        ''')
+        banned_users = cursor.fetchall()
+        conn.close()
+        
+        return banned_users
+
+    def get_user_info(self, user_id):
+        """Получает информацию о пользователе"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        return user
+
 # Инициализация базы данных
 db = Database(DB_FILE)
 
@@ -347,7 +421,34 @@ def startup_notice():
     if maintenance_status['maintenance_mode']:
         print("   ⚠️  Бот в режиме техобслуживания")
     
+    # Проверяем баны
+    banned_users = db.get_banned_users()
+    print(f"   🚫 Забанено пользователей: {len(banned_users)}")
+    
     print("="*50 + "\n")
+
+# --- ПРОВЕРКА БАНОВ ---
+async def check_ban(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None) -> bool:
+    """Проверяет, забанен ли пользователь"""
+    if user_id is None:
+        user_id = update.effective_user.id
+    
+    # Админы не могут быть забанены
+    if user_id in ADMIN_USER_IDS:
+        return False
+        
+    if db.is_user_banned(user_id):
+        ban_info = db.get_banned_users()
+        user_ban = next((ban for ban in ban_info if ban[0] == user_id), None)
+        
+        if user_ban:
+            reason = user_ban[2] or "Нарушение правил"
+            message = f"🚫 Вы забанены!\n\nПричина: {reason}\n\nДля разбирательства обратитесь к администратору."
+            
+            await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+            return True
+    
+    return False
 
 # --- ИСПРАВЛЕННЫЕ ФУНКЦИИ ПРОВЕРКИ ТЕХОБСЛУЖИВАНИЯ ---
 async def check_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None) -> bool:
@@ -385,6 +486,10 @@ async def check_status_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """ОБРАБОТЧИК для кнопки 'Проверить статус' - работает ВНЕ ConversationHandler"""
     user_id = update.effective_user.id
     
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return
+    
     # Админы всегда могут использовать бот
     if user_id in ADMIN_USER_IDS:
         await start(update, context)
@@ -417,6 +522,11 @@ def clear_old_viewed_profiles(user_data):
 async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Очищает историю просмотренных анкет, лайки и дизлайки"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -437,6 +547,11 @@ async def clear_history_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полный сброс для тестирования"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -452,6 +567,17 @@ async def reset_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("🎯 Полный сброс выполнен! Все анкеты будут показаны заново.")
 
+# --- КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID ---
+async def get_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает пользователю его ID"""
+    user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return
+        
+    await update.message.reply_text(f"Ваш ID: `{user_id}`", parse_mode='Markdown')
+
 # --- АДМИН ПАНЕЛЬ ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Панель администратора"""
@@ -463,7 +589,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     keyboard = [
         [KeyboardButton("📊 Статистика"), KeyboardButton("🛠️ Техобслуживание")],
-        [KeyboardButton("📢 Рассылка"), KeyboardButton("👥 Управление пользователями")],
+        [KeyboardButton("🔨 Управление банами"), KeyboardButton("👥 Управление пользователями")],
         [KeyboardButton("⬅️ Главное меню")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -471,9 +597,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     maintenance_status = db.get_maintenance_status()
     status_text = "🟢 Активен" if not maintenance_status['maintenance_mode'] else "🟡 Техобслуживание"
     
+    banned_count = len(db.get_banned_users())
+    
     await update.message.reply_text(
         f"⚙️ **Панель администратора**\n"
-        f"Статус бота: {status_text}\n\n"
+        f"Статус бота: {status_text}\n"
+        f"Забанено пользователей: {banned_count}\n\n"
         f"Выберите действие:",
         reply_markup=reply_markup
     )
@@ -497,6 +626,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     complete_profiles = len([uid for uid in user_profiles if is_profile_complete(uid)])
     total_likes = sum(len(likes) for likes in user_likes.values())
     total_matches = sum(len(matches) for matches in matched_users.values()) // 2
+    banned_count = len(db.get_banned_users())
     
     # Статистика по полу
     cursor.execute('SELECT gender, COUNT(*) FROM users GROUP BY gender')
@@ -527,6 +657,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         f"• Заполненных анкет: {complete_profiles}\n"
         f"• Всего лайков: {total_likes}\n"
         f"• Совпадений: {total_matches}\n"
+        f"• Забанено: {banned_count}\n"
         f"• Новых за неделю: {new_users_week}\n"
         f"• Активных за сутки: {active_users_day}\n\n"
     )
@@ -637,6 +768,235 @@ async def save_maintenance_message(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text("✅ Сообщение техобслуживания обновлено!")
     return await maintenance_management(update, context)
 
+# --- УПРАВЛЕНИЕ БАНАМИ ---
+async def ban_management(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Управление банами"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    banned_users = db.get_banned_users()
+    
+    keyboard = [
+        [KeyboardButton("🔨 Забанить пользователя")],
+        [KeyboardButton("🔓 Разбанить пользователя")],
+        [KeyboardButton("📋 Список банов")],
+        [KeyboardButton("⬅️ Назад в админку")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    ban_count = len(banned_users)
+    
+    await update.message.reply_text(
+        f"🔨 **Управление банами**\n\n"
+        f"Забанено пользователей: {ban_count}\n\n"
+        f"Выберите действие:",
+        reply_markup=reply_markup
+    )
+    return BAN_MANAGEMENT
+
+async def show_banned_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает список забаненных пользователей"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    banned_users = db.get_banned_users()
+    
+    if not banned_users:
+        await update.message.reply_text("🚫 Нет забаненных пользователей.")
+        return await ban_management(update, context)
+    
+    ban_list = "📋 **Список забаненных пользователей:**\n\n"
+    
+    for i, (banned_id, username, reason, banned_at) in enumerate(banned_users, 1):
+        user_info = db.get_user_info(banned_id)
+        name = user_info[3] if user_info else "Неизвестно"
+        ban_list += f"{i}. ID: {banned_id}\n"
+        ban_list += f"   Имя: {name}\n"
+        ban_list += f"   Юзернейм: @{username if username else 'нет'}\n"
+        ban_list += f"   Причина: {reason or 'Не указана'}\n"
+        ban_list += f"   Забанен: {banned_at[:16]}\n\n"
+    
+    await update.message.reply_text(ban_list)
+    return BAN_MANAGEMENT
+
+async def ban_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс бана пользователя"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    await update.message.reply_text(
+        "Введите ID пользователя для бана:\n\n"
+        "Чтобы узнать ID пользователя, попросите его отправить команду /id",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⬅️ Отмена")]], resize_keyboard=True)
+    )
+    context.user_data['waiting_for_ban_user_id'] = True
+    return BAN_MANAGEMENT
+
+async def ban_user_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает причину бана"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    try:
+        target_user_id = int(update.message.text)
+        
+        # Проверяем, существует ли пользователь
+        target_user = db.get_user_info(target_user_id)
+        if not target_user:
+            await update.message.reply_text("❌ Пользователь с таким ID не найден.")
+            return await ban_management(update, context)
+        
+        # Проверяем, не забанен ли уже
+        if db.is_user_banned(target_user_id):
+            await update.message.reply_text("❌ Этот пользователь уже забанен.")
+            return await ban_management(update, context)
+        
+        # Проверяем, не админ ли
+        if target_user_id in ADMIN_USER_IDS:
+            await update.message.reply_text("❌ Нельзя забанить администратора.")
+            return await ban_management(update, context)
+        
+        context.user_data['ban_target_id'] = target_user_id
+        context.user_data['ban_target_username'] = target_user[1]  # username из БД
+        
+        await update.message.reply_text(
+            f"Пользователь: {target_user[3]} (@{target_user[1]})\n"
+            f"ID: {target_user_id}\n\n"
+            "Введите причину бана:",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⬅️ Отмена")]], resize_keyboard=True)
+        )
+        context.user_data['waiting_for_ban_reason'] = True
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат ID. Введите числовой ID.")
+        return await ban_management(update, context)
+    
+    return BAN_MANAGEMENT
+
+async def confirm_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Подтверждает и выполняет бан"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    target_user_id = context.user_data.get('ban_target_id')
+    target_username = context.user_data.get('ban_target_username')
+    reason = update.message.text
+    
+    if not target_user_id:
+        await update.message.reply_text("❌ Ошибка: не найден ID пользователя для бана.")
+        return await ban_management(update, context)
+    
+    # Выполняем бан
+    db.ban_user(target_user_id, target_username, reason, user_id)
+    
+    # Очищаем временные данные
+    context.user_data.pop('ban_target_id', None)
+    context.user_data.pop('ban_target_username', None)
+    context.user_data.pop('waiting_for_ban_user_id', None)
+    context.user_data.pop('waiting_for_ban_reason', None)
+    
+    target_user_info = db.get_user_info(target_user_id)
+    target_name = target_user_info[3] if target_user_info else "Неизвестно"
+    
+    await update.message.reply_text(
+        f"✅ Пользователь {target_name} (@{target_username}) забанен!\n"
+        f"Причина: {reason}"
+    )
+    
+    # Отправляем уведомление забаненному пользователю (если он активен)
+    try:
+        ban_message = f"🚫 Вы были забанены администратором.\n\nПричина: {reason}\n\nДля разбирательства обратитесь к администратору."
+        await context.bot.send_message(chat_id=target_user_id, text=ban_message)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить уведомление о бане пользователю {target_user_id}: {e}")
+    
+    return await ban_management(update, context)
+
+async def unban_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс разбана пользователя"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    banned_users = db.get_banned_users()
+    
+    if not banned_users:
+        await update.message.reply_text("🚫 Нет забаненных пользователей для разбана.")
+        return await ban_management(update, context)
+    
+    keyboard = []
+    for banned_id, username, reason, banned_at in banned_users:
+        user_info = db.get_user_info(banned_id)
+        name = user_info[3] if user_info else "Неизвестно"
+        button_text = f"🔓 {name} (ID: {banned_id})"
+        keyboard.append([KeyboardButton(button_text)])
+    
+    keyboard.append([KeyboardButton("⬅️ Отмена")])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        "Выберите пользователя для разбана:",
+        reply_markup=reply_markup
+    )
+    context.user_data['waiting_for_unban'] = True
+    
+    return BAN_MANAGEMENT
+
+async def execute_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выполняет разбан пользователя"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        return ADMIN_PANEL
+    
+    button_text = update.message.text
+    
+    # Извлекаем ID из текста кнопки
+    try:
+        target_user_id = int(button_text.split("ID: ")[1].split(")")[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Ошибка при обработке выбора.")
+        return await ban_management(update, context)
+    
+    # Выполняем разбан
+    db.unban_user(target_user_id)
+    
+    target_user_info = db.get_user_info(target_user_id)
+    target_name = target_user_info[3] if target_user_info else "Неизвестно"
+    target_username = target_user_info[1] if target_user_info else "Неизвестно"
+    
+    await update.message.reply_text(
+        f"✅ Пользователь {target_name} (@{target_username}) разбанен!"
+    )
+    
+    # Отправляем уведомление разбаненному пользователю
+    try:
+        unban_message = "🎉 Вы были разбанены! Теперь вы снова можете пользоваться ботом."
+        await context.bot.send_message(chat_id=target_user_id, text=unban_message)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить уведомление о разбане пользователю {target_user_id}: {e}")
+    
+    context.user_data.pop('waiting_for_unban', None)
+    return await ban_management(update, context)
+
 # --- ОСНОВНЫЕ ФУНКЦИИ БОТА ---
 def is_profile_complete(user_id):
     profile = user_profiles.get(user_id)
@@ -693,6 +1053,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks the user about their gender."""
     user_id = update.effective_user.id
     
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     # Проверяем техобслуживание (админы пропускаются)
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
@@ -731,12 +1095,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         return GENDER
 
-# ... (остальные функции остаются без изменений)
-
 @auto_save
 async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the gender and asks for the name."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -759,6 +1126,11 @@ async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the name and asks for the age."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -773,6 +1145,11 @@ async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the age and asks for the city."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -797,6 +1174,11 @@ async def age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the city (course) and asks for the bio."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -821,6 +1203,11 @@ async def city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the bio and asks for a photo."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -835,6 +1222,11 @@ async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the photo and asks for confirmation."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -875,6 +1267,11 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Confirms the profile or allows editing."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -904,6 +1301,10 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Main menu for the user."""
     user_id = update.effective_user.id
     
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -933,6 +1334,11 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Allows user to choose what to edit."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -949,6 +1355,11 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования пола"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -961,6 +1372,11 @@ async def edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного пола"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -973,6 +1389,11 @@ async def save_edit_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования имени"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -983,6 +1404,11 @@ async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного имени"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -995,6 +1421,11 @@ async def save_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования возраста"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1005,6 +1436,11 @@ async def edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного возраста"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1025,6 +1461,11 @@ async def save_edit_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования курса"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1035,6 +1476,11 @@ async def edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного курса"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1055,6 +1501,11 @@ async def save_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования описания"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1065,6 +1516,11 @@ async def edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного описания"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1077,6 +1533,11 @@ async def save_edit_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало редактирования фото"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1087,6 +1548,11 @@ async def edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохранение отредактированного фото"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1103,6 +1569,11 @@ async def save_edit_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Завершение редактирования профиля"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1112,6 +1583,11 @@ async def done_editing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает профиль пользователя"""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1153,6 +1629,11 @@ async def show_my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # --- ОБНОВЛЕННАЯ ФУНКЦИЯ: Поиск следующей анкеты ---
 async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1177,6 +1658,9 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             continue
         if not is_profile_complete(profile_id):
             continue
+        # Пропускаем забаненных пользователей
+        if db.is_user_banned(profile_id):
+            continue
 
         available_profiles.append(profile_id)
 
@@ -1187,7 +1671,8 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             and is_profile_complete(pid)
                             and pid not in user_likes.get(user_id, set())
                             and pid not in user_dislikes.get(user_id, set())
-                            and pid not in matched_users.get(user_id, set())]
+                            and pid not in matched_users.get(user_id, set())
+                            and not db.is_user_banned(pid)]  # Исключаем забаненных
         
         if not available_profiles:
             keyboard = [
@@ -1218,8 +1703,8 @@ async def search_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # --- Notification functions ---
 @auto_save
 async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем техобслуживание для уведомлений
-    if await check_maintenance_for_user(liked_id):
+    # Проверяем бан для уведомлений
+    if await check_maintenance_for_user(liked_id) or db.is_user_banned(liked_id):
         return
         
     liker_profile = user_profiles.get(liker_id)
@@ -1242,8 +1727,9 @@ async def notify_liked_user(liker_id: int, liked_id: int, context: ContextTypes.
 
 @auto_save
 async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем техобслуживание для уведомлений
-    if await check_maintenance_for_user(user1_id) or await check_maintenance_for_user(user2_id):
+    # Проверяем бан для уведомлений
+    if (await check_maintenance_for_user(user1_id) or db.is_user_banned(user1_id) or
+        await check_maintenance_for_user(user2_id) or db.is_user_banned(user2_id)):
         return
         
     user1_profile = user_profiles.get(user1_id)
@@ -1283,6 +1769,11 @@ async def notify_match(user1_id: int, user2_id: int, context: ContextTypes.DEFAU
 async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User likes the current profile."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1331,6 +1822,11 @@ async def like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """User dislikes the current profile."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1369,6 +1865,11 @@ async def dislike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows settings options."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1390,8 +1891,8 @@ async def handle_match_response(update: Update, context: ContextTypes.DEFAULT_TY
 
     liked_id = query.from_user.id
     
-    # Проверяем техобслуживание для callback
-    if await check_maintenance_for_user(liked_id):
+    # Проверяем бан для callback
+    if await check_maintenance_for_user(liked_id) or db.is_user_banned(liked_id):
         await query.edit_message_text("⚙️ Бот находится на техническом обслуживании. Пожалуйста, попробуйте позже.")
         return
 
@@ -1478,6 +1979,11 @@ async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Returns to the main menu."""
     user_id = update.effective_user.id
+    
+    # Проверяем бан
+    if await check_ban(update, context, user_id):
+        return ConversationHandler.END
+        
     if await check_maintenance(update, context, user_id):
         return ConversationHandler.END
         
@@ -1566,6 +2072,7 @@ def main() -> None:
             ADMIN_PANEL: [
                 MessageHandler(filters.Regex("^📊 Статистика$"), admin_stats),
                 MessageHandler(filters.Regex("^🛠️ Техобслуживание$"), maintenance_management),
+                MessageHandler(filters.Regex("^🔨 Управление банами$"), ban_management),
                 MessageHandler(filters.Regex("^🟢 Выключить техобслуживание$"), toggle_maintenance),
                 MessageHandler(filters.Regex("^🔴 Включить техобслуживание$"), toggle_maintenance),
                 MessageHandler(filters.Regex("^✏️ Изменить сообщение$"), set_maintenance_message),
@@ -1573,6 +2080,15 @@ def main() -> None:
                 MessageHandler(filters.Regex("^⬅️ Назад в админку$"), back_to_admin),
                 MessageHandler(filters.Regex("^⬅️ Отмена$"), back_to_admin),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, save_maintenance_message),
+            ],
+            BAN_MANAGEMENT: [
+                MessageHandler(filters.Regex("^🔨 Забанить пользователя$"), ban_user_handler),
+                MessageHandler(filters.Regex("^🔓 Разбанить пользователя$"), unban_user_handler),
+                MessageHandler(filters.Regex("^📋 Список банов$"), show_banned_users),
+                MessageHandler(filters.Regex("^⬅️ Назад в админку$"), back_to_admin),
+                MessageHandler(filters.Regex("^⬅️ Отмена$"), back_to_admin),
+                MessageHandler(filters.Regex("^🔓 .*"), execute_unban),  # Для кнопок разбана
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ban_user_reason),  # Обработка ID и причин
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel), MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, back_to_menu)],
@@ -1588,6 +2104,7 @@ def main() -> None:
     application.add_handler(CommandHandler("clear", clear_history_handler))
     application.add_handler(CommandHandler("reset", reset_all_handler))
     application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("id", get_user_id))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
