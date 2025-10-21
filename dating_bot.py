@@ -72,6 +72,8 @@ ADMIN_USER_IDS = [5652528225]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
 class Database:
     def __init__(self, db_file):
         self.db_file = db_file
+        # Создаем папку если нужно
+        os.makedirs(os.path.dirname(db_file) if os.path.dirname(db_file) else '.', exist_ok=True)
         self.init_db()
     
     def init_db(self):
@@ -578,6 +580,39 @@ async def get_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(f"Ваш ID: `{user_id}`", parse_mode='Markdown')
 
+# --- КОМАНДА ДЛЯ ИНИЦИАЛИЗАЦИИ БАЗЫ ДАННЫХ ---
+async def init_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принудительно инициализирует базу данных"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_USER_IDS:
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+    
+    try:
+        db.init_db()
+        await update.message.reply_text("✅ База данных создана!")
+        
+        # Перезагружаем данные
+        db.load_all_data()
+        await update.message.reply_text("✅ Данные загружены!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# --- КОМАНДА ДЛЯ ОТЛАДКИ ПРОФИЛЯ ---
+async def debug_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для отладки профиля"""
+    user_id = update.effective_user.id
+    
+    await update.message.reply_text(
+        f"🔍 **Отладочная информация:**\n"
+        f"ID: {user_id}\n"
+        f"В памяти: {'Есть' if user_id in user_profiles else 'Нет'}\n"
+        f"Заполнен: {'Да' if is_profile_complete(user_id) else 'Нет'}\n"
+        f"Забанен: {'Да' if db.is_user_banned(user_id) else 'Нет'}\n"
+        f"Файл БД: {'Есть' if os.path.exists(DB_FILE) else 'Нет'}"
+    )
+
 # --- АДМИН ПАНЕЛЬ ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Панель администратора"""
@@ -1052,6 +1087,9 @@ async def send_profile_card(user_id: int, target_user_id: int, context: ContextT
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks the user about their gender."""
     user_id = update.effective_user.id
+    
+    # 🔥 ПЕРЕЗАГРУЖАЕМ ДАННЫЕ ИЗ БАЗЫ
+    db.load_all_data()
     
     # Проверяем бан
     if await check_ban(update, context, user_id):
@@ -2010,6 +2048,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main() -> None:
     """Run the bot."""
+    # 🔥 ПРОВЕРЯЕМ И СОЗДАЕМ БАЗУ ДАННЫХ ПРИ СТАРТЕ
+    if not os.path.exists(DB_FILE):
+        print("🆕 Создаю базу данных...")
+        db.init_db()
+    
     # Загружаем данные при старте
     load_data()
     startup_notice()
@@ -2105,9 +2148,17 @@ def main() -> None:
     application.add_handler(CommandHandler("reset", reset_all_handler))
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("id", get_user_id))
+    application.add_handler(CommandHandler("initdb", init_db_command))
+    application.add_handler(CommandHandler("debug", debug_profile))
 
     # Run the bot until the user presses Ctrl-C
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🚀 Бот запускается...")
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
 
 if __name__ == "__main__":
     main()
